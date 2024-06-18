@@ -284,6 +284,68 @@ q
 
         // Binary check is done before a regexp that causes an error
         $this->assertStringContainsString('Marko Nestorović PR', $pages[0]->getText());
+
+        // mb_check_encoding(..., 'UTF-8') returns true here,
+        // necessitating a test for UTF-8 that's more strict
+        $content = hex2bin('0101010101010101');
+        $cleaned = $formatContent->invoke($this->getPdfObjectInstance(new Document()), $content);
+
+        $this->assertEquals('', $cleaned);
+    }
+
+    /**
+     * Check that escaped slashes and parentheses are accounted for,
+     * formatContent would emit a PHP Warning for "regular expression
+     * is too large" here without fix for issue #709
+     *
+     * @see https://github.com/smalot/pdfparser/issues/709
+     */
+    public function testFormatContentIssue709()
+    {
+        $formatContent = new \ReflectionMethod('Smalot\PdfParser\PDFObject', 'formatContent');
+        $formatContent->setAccessible(true);
+
+        $content = '(String \\\\\\(string)Tj '.str_repeat('(Test)Tj ', 4500);
+        $cleaned = $formatContent->invoke($this->getPdfObjectInstance(new Document()), $content);
+
+        $this->assertStringContainsString('(String \\\\\\(string)Tj'."\r\n", $cleaned);
+    }
+
+    /**
+     * Check that inline image data does not corrupt the stream
+     *
+     * @see: https://github.com/smalot/pdfparser/issues/691
+     */
+    public function testFormatContentInlineImages(): void
+    {
+        $formatContent = new \ReflectionMethod('Smalot\PdfParser\PDFObject', 'formatContent');
+        $formatContent->setAccessible(true);
+
+        $cleaned = $formatContent->invoke(
+            $this->getPdfObjectInstance(new Document()),
+            'BT (This BI /W 258 /H 51 /should not trigger /as a /PDF command) TD ET q 65.30 0 0 18.00 412 707 cm BI /W 544 /H 150
+/BPC 1 /IM true /F [/A85 /Fl] ID Gb"0F_$L6!$j/a\$:ma&h\'JnJJ9S?O_EA-W+%D^ClCH=FP3s5M-gStQm\'5/hc`C?<Q)riWgtEe:Po0dY_-er6$jM@#?n`E+#(sa"0Gk3&K>CqL(^pV$_-er6Ik`"-1]Q ;~> EI Q /F002 10.00 Tf 0.00 Tw 0 g'
+        );
+
+        // PdfParser should not be fooled by Q's in inline image data;
+        // Only one 'Q' command should be found
+        $commandQ = preg_match_all('/Q\r\n/', $cleaned);
+        $this->assertEquals(1, $commandQ);
+
+        // The 'BI' inside a string should not be interpreted as the
+        // beginning of an inline image command
+        $this->assertStringContainsString('(This BI /W 258 /H 51 /should not trigger /as a /PDF command) TD', $cleaned);
+
+        $cleaned = $formatContent->invoke(
+            $this->getPdfObjectInstance(new Document()),
+            'BT (This BI /W 258 /H 51 /should not () \) trigger /as a /PDF command) TD (There is no ID inline image in this data) TD (Nothing but text EI should be found) TD ET'
+        );
+
+        $this->assertEquals('BT'."\r\n".
+'(This BI /W 258 /H 51 /should not () \) trigger /as a /PDF command) TD'."\r\n".
+'(There is no ID inline image in this data) TD'."\r\n".
+'(Nothing but text EI should be found) TD'."\r\n".
+'ET', $cleaned);
     }
 
     public function testGetSectionsText(): void
